@@ -1,55 +1,68 @@
-# 🤖 AI Desktop Assistant
+# Assistant AI — Microservice Architecture
 
-A floating on-screen AI assistant button (inspired by ASUS ScreenXpert) powered by a local AI model.
+This project is a modern, decoupled Desktop AI Assistant. It consists of a **FastAPI backend** running in Docker and an **Electron + React frontend** acting as a lightweight desktop client.
 
-![Screenshot](screenshot_placeholder.png)
+## 🎓 Beginner Learning Guide
+If you are completely new to coding, don't worry! We have created a comprehensive, beginner-friendly guide that explains every concept used in this project using simple analogies.
 
-## Features
+👉 **[Read the Beginner's Learning Guide Here](LEARNING_GUIDE.md)** 👈
 
-- **Floating draggable button:** Always on top, providing quick access.
-- **Modern dark-themed chat interface:** Clean and responsive UI.
-- **Local AI processing:** Powered by Ollama (no cloud, full privacy).
-- **System tray integration:** Easy management and quick access.
-- **Conversation history:** Keeps track of your chats.
-- **Smooth animations:** Polished user experience.
+---
 
-## Prerequisites
+## 🏗️ Architecture Segments
 
-- Python 3.10+
-- Windows 10/11
+The repository is broken into three main independent segments.
 
-## Quick Start
+### Segment 1: Global Infrastructure (Root)
+This segment is responsible for defining the workspace, containerizing the application, and orchestrating services.
+*   **`docker-compose.yml`**: The master orchestration file. It defines and connects 4 isolated containers:
+    *   `api`: The FastAPI Python backend.
+    *   `celery-worker`: A background worker for heavy tasks (like document processing).
+    *   `postgres`: A PostgreSQL 16 database with the `pgvector` extension for storing chat history and embeddings.
+    *   `redis`: An in-memory cache used for token bucket rate-limiting and Celery message brokering.
+*   **`pyproject.toml`**: The UV workspace definition and configuration file for formatting rules (Ruff) and testing settings (Pytest).
+*   **`main.py`**: Unified Python setup & launcher script. Automatically opens **Ollama** and **Docker Desktop** if they are not running, initializes `.venv` and `node_modules` if missing, boots Docker Compose, applies Alembic database migrations, and starts the desktop app.
 
-The easiest way to start is:
-1. Double-click `run.bat` in the `ai_assistant` directory. (This handles dependencies, Ollama setup, and launches the app)
+### Segment 2: The Backend API (`/api`)
+This is the "Brain" of the operation. It is a stateless Python application.
+*   **`api/Dockerfile`**: A multi-stage Docker build that packages the Python app using `uv` for fast dependency resolution.
+*   **`api/alembic.ini` & `api/app/db/migrations/`**: Alembic configuration. When run, this reads the python models and automatically maps them into SQL tables in PostgreSQL.
+*   **`api/app/main.py`**: The FastAPI application factory. It hooks up the middleware, registers the routers, and handles the `lifespan` (booting DB connections before accepting web traffic).
+*   **`api/app/routers/`**: The HTTP endpoints exposed to the frontend.
+    *   `chat.py`: Handles `/chat/stream` for generating responses. Uses Server-Sent Events (SSE) to push words back to the UI one token at a time.
+    *   `models.py`: Endpoints to get available AI models from Ollama.
+    *   `health.py`: Diagnostics to ensure DB, Redis, and Ollama are reachable.
+*   **`api/app/repositories/chat.py`**: Implementation of the *Repository Pattern*. It prevents database logic (SQLAlchemy) from leaking into the routers.
+*   **`api/app/services/`**: Core business logic.
+    *   `ollama.py`: Asynchronous `httpx` client to talk to the host Ollama service (`host.docker.internal:11434`).
+    *   `rate_limiter.py`: A Redis-backed Sliding Window Token Bucket to prevent API spam.
+*   **`api/app/models/`**:
+    *   `database.py`: SQLAlchemy ORM classes (`ChatSession`, `Message`). Includes `pgvector` for future semantic search.
+    *   `schemas.py`: Pydantic V2 models for strict request/response validation and OpenAPI doc generation.
+*   **`api/app/dependencies.py`**: FastAPI `Depends()` injection. Yields the live Database Sessions and Redis Connections to the routers securely.
+*   **`api/app/middleware/`**: ASGI middleware that intercepts requests to inject tracing headers (`X-Correlation-ID`) and measure request times (`X-Process-Time`).
 
-**OR (Manual setup)**
-1. `pip install -r ai_assistant/requirements.txt`
-2. `cd ai_assistant && python setup_model.py`
-3. `cd ai_assistant && python main.py`
+### Segment 3: The Desktop Client (`/client`)
+This is a desktop shell that simply renders the UI. It contains **ZERO** database or AI logic.
+*   **`client/main.cjs`**: The Electron backend of the desktop app. It provides OS-level capabilities (like creating a frameless window, pinning it "Always on Top" as a widget, and enabling dragging).
+*   **`client/src/`**: The React frontend code.
+    *   `App.tsx`: The main chat interface. It loads your local Ollama models, manages chat messages, and reads the SSE stream from the FastAPI backend securely via buffered chunk parsing.
+    *   `index.css`: Imports Tailwind CSS for rapid styling.
+*   **`client/package.json`**: Defines Node.js dependencies (React, Electron, Vite, Tailwind).
 
-## How it works
+---
 
-This assistant uses **Ollama** running locally on your machine to host the **phi3:mini** model. It provides completely private, offline AI responses without relying on cloud APIs.
+## 🚀 Usage (`main.py`)
 
-## Usage
+All setup and startup tasks are handled by **`main.py`** in the project root:
 
-- **Drag:** Click and drag the floating button to move it around your screen.
-- **Chat:** Click the button to open the chat window.
-- **Right-click:** Access the menu on the floating button.
-- **System Tray:** Use the system tray icon to show/hide the app or quit.
+```powershell
+# Full launch (starts Ollama & Docker if closed, sets up environments if missing, runs migrations, and launches Electron app)
+python main.py
+```
 
-## Configuration
-
-You can change the AI model or port in the configuration files if you prefer something other than `phi3:mini` or the default `11434` port for Ollama.
-
-## Architecture
-
-- `ai_assistant/setup_model.py`: Bootstraps Ollama and downloads the required model.
-- `ai_assistant/run.bat`: Easy launcher script.
-- `ai_assistant/main.py`: Main application (to be implemented).
-- `ai_assistant/requirements.txt`: Python dependencies.
-
-## License
-
-MIT
+### Useful Flags
+*   **`python main.py --web`**: Launch the React UI in your browser (`http://localhost:1420`) instead of booting the Electron window.
+*   **`python main.py --infra-only`**: Start Ollama, Docker Desktop, backend containers, and DB migrations without opening the UI.
+*   **`python main.py --setup`**: Force reinstall of `.venv` Python packages and `client/node_modules`.
+*   **`python main.py --stop`**: Stop all running Docker Compose containers.
